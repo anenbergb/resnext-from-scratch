@@ -132,3 +132,10 @@ Inference transforms
 * The images are resized to resize_size=[232] using interpolation=InterpolationMode.BILINEAR
 * Followed by a central crop of crop_size=[224]
 * Tensor values are first rescaled to [0.0, 1.0] and then normalized using mean=[0.485, 0.456, 0.406] and std=[0.229, 0.224, 0.225]
+
+## Incorporated ideas from the following resources
+* Torchvision classification reference https://github.com/pytorch/vision/blob/main/references/classification/train.py
+* Huggingface Accelerator https://huggingface.co/docs/accelerate/index
+* Huggingface Accelerator examples https://github.com/huggingface/accelerate/blob/main/examples/complete_cv_example.py
+* Evaluate https://huggingface.co/docs/evaluate/index
+

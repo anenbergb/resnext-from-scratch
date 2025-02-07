@@ -26,6 +26,7 @@ from resnext.torchvision_utils import set_weight_decay
 class TrainingConfig:
     output_dir: str
     overwrite_output_dir = True  # overwrite the old model
+    resume_from_checkpoint: str = None
 
     train_batch_size = 128
     val_batch_size = 256
@@ -137,6 +138,10 @@ def train_resnext(config: TrainingConfig):
     model, optimizer, train_dataloader, val_dataloader, scheduler = accelerator.prepare(
         model, optimizer, train_dataloader, val_dataloader, scheduler
     )
+    if config.resume_from_checkpoint is not None or config.resume_from_checkpoint != "":
+        accelerator.load_state(config.resume_from_checkpoint)
+    # TODO: automatically load the most recent checkpoint from the output_dir
+
     # save the starting state
     accelerator.save_state()  # saves to output_dir/checkpointing/checkpoint_0
 
@@ -145,6 +150,7 @@ def train_resnext(config: TrainingConfig):
 
     global_step = 0
     for epoch in range(config.epochs):
+        total_loss = 0
 
         num_steps = (
             len(train_dataloader)
@@ -166,6 +172,7 @@ def train_resnext(config: TrainingConfig):
             logits = model(images)
             with accelerator.autocast():
                 loss = criterion(logits, labels)
+            total_loss += loss.detach().item()
             accelerator.backward()
 
             accelerator.clip_grad_norm_(model.parameters(), 1.0)
@@ -173,6 +180,7 @@ def train_resnext(config: TrainingConfig):
 
             progress_bar.update(1)
             current_lr = scheduler.get_last_lr()[0]
+            # step might not be neccessary to log
             logs = {"loss": loss.detach().item(), "lr": current_lr, "step": global_step}
             progress_bar.set_postfix(**logs)
             accelerator.log(logs, step=global_step)
@@ -182,90 +190,96 @@ def train_resnext(config: TrainingConfig):
             # save_directory = os.path.join(config.output_dir, "checkpoints")
             accelerator.wait_for_everyone()
             if accelerator.is_main_process:
+                output_dir = os.path.join(config.output_dir, f"epoch_{epoch}")
                 # accelerator.save_model(model, save_directory)
-                # This API is designed to save and resume training states only from within the same python script or training setup
-                accelerator.save_state(config.output_dir)
+                accelerator.save_state(output_dir)
 
         scheduler.step()  # once per epoch
 
-        accuracy, val_loss = run_validation(
+        val_metrics = run_validation(
+            accelerator,
             model,
             criterion,
             val_dataloader,
-            device=device,
-            limit_val_iters=limit_val_iters,
+            limit_val_iters=config.limit_val_iters,
         )
+        val_print_str = f"Validation metrics [Epoch {epoch}]: "
+        for k, v in val_metrics.items():
+            val_print_str += f"{k}: {v:.3f} "
+        accelerator.print(val_print_str)
+        log = {f"val/{k}": v for k, v in val_metrics.items()}
+        log["epoch"] = epoch
+        accelerator.log(**log, step=global_step)
 
-        progress.set_postfix(
-            lr=f"{current_lr:.0e}",
-            loss=f"{loss.cpu().item():.3f}",
-            val_loss=f"{val_loss:.3f}",
-            accuracy=f"{accuracy:.3f}",
-        )
     accelerator.end_training()
 
 
-def run_validation(
-    accelerator, model, criterion, val_data_loader, device="cuda", limit_val_iters=0
-):
-    all_preds = np.array([], dtype=int)
-    all_labels = np.array([], dtype=int)
+def run_validation(accelerator, model, criterion, val_data_loader, limit_val_iters=0):
+    metrics = CombinedEvaluations(["accuracy", "f1", "precision", "recall"])
+
     total_loss = 0
+    image_counter = 0
     model.eval()
     with torch.inference_mode():
-        for step, batch in (
-            inner := tqdm(
-                enumerate(val_data_loader),
-                total=len(val_data_loader) if limit_val_iters == 0 else limit_val_iters,
-                desc="Validation",
-            )
+        for step, batch in tqdm(
+            enumerate(val_data_loader),
+            total=len(val_data_loader) if limit_val_iters == 0 else limit_val_iters,
+            desc="Validation",
         ):
             if limit_val_iters > 0 and step >= limit_val_iters:
                 break
-            images = batch["image"].to(device)
-            labels = batch["label"].to(device)
+            images = batch["image"]
+            labels = batch["label"]
             logits = model(images)
             preds = torch.argmax(logits, dim=1).cpu().numpy()
-            all_preds = np.concatenate((all_preds, preds))
-            all_labels = np.concatenate((all_labels, labels.cpu().numpy()))
-            loss = criterion(logits, labels) * images.size(0)
-            total_loss += loss.cpu().item()
+            with accelerator.autocast():
+                loss = criterion(logits, labels)  # average loss
+            total_loss += loss.cpu().item() * images.size(0)
+            image_counter += images.size(0)
 
-    avg_loss = total_loss / len(all_labels)
-    accuracy = accuracy_score(all_labels, all_preds)
-    return accuracy, avg_loss
+            preds, labels = accelerator.gather_for_metrics((preds, labels))
+            metrics.add_batch(predictions=preds, references=labels)
+
+    val_metrics = metrics.compute(
+        f1={"average": "macro"},
+        precision={"average": "macro", "zero_division": 0},
+        recall={"average": "macro", "zero_division": 0},
+    )
+
+    avg_loss = total_loss / image_counter
+
+    print(f"run_validation process {accelerator.process_index}, val/loss: {avg_loss}")
+    val_metrics["loss"] = avg_loss
+
+    return val_metrics
 
 
-# https://huggingface.co/spaces/evaluate-metric/precision
-class ClassificationEvaluator:
-    def __init__(self):
-        self.accuracy = evaluate.load("accuracy")
-        self.f1 = evaluate.load("f1")
-        self.precision = evaluate.load("precision")
-        self.recall = evaluate.load("recall")
+class CombinedEvaluations(evaluate.CombinedEvaluations):
+    """
+    Extended this class https://github.com/huggingface/evaluate/blob/v0.4.3/src/evaluate/module.py#L872
+    """
 
-    def __call__(self, eval_pred):
-        predictions, labels = eval_pred
-        predictions = np.argmax(predictions, axis=1)
-        results = {
-            **self.accuracy.compute(predictions=predictions, references=labels),
-            **self.f1.compute(
-                predictions=predictions, references=labels, average="macro"
-            ),
-            **self.precision.compute(
-                predictions=predictions,
-                references=labels,
-                average="macro",
-                zero_division=0,
-            ),
-            **self.recall.compute(
-                predictions=predictions,
-                references=labels,
-                average="macro",
-                zero_division=0,
-            ),
+    def compute(self, predictions=None, references=None, **kwargs):
+        results = []
+        kwargs_per_evaluation_module = {
+            name: {} for name in self.evaluation_module_names
         }
-        return results
+        for key, value in kwargs.items():
+            if key not in kwargs_per_evaluation_module:
+                for k in kwargs_per_evaluation_module:
+                    kwargs_per_evaluation_module[k].update({key: value})
+            elif key in kwargs_per_evaluation_module and isinstance(value, dict):
+                kwargs_per_evaluation_module[key].update(value)
+
+        for evaluation_module in self.evaluation_modules:
+            batch = {
+                "predictions": predictions,
+                "references": references,
+                **kwargs_per_evaluation_module[evaluation_module.name],
+            }
+            results.append(evaluation_module.compute(**batch))
+
+        return self._merge_results(results)
 
 
 def get_args() -> argparse.Namespace:
@@ -302,6 +316,12 @@ Run training loop for ResNeXt model on ImageNet dataset.
         default=0,
         help="Limit number of val iterations per epoch",
     )
+    parser.add_argument(
+        "--resume_from_checkpoint",
+        type=str,
+        default=None,
+        help="If the training should continue from a checkpoint folder.",
+    )
     return parser.parse_args()
 
 
@@ -315,6 +335,7 @@ if __name__ == "__main__":
         lr_warmup_steps=args.lr_warmup_epochs,
         limit_train_iters=args.limit_train_iters,
         limit_val_iters=args.limit_val_iters,
+        resume_from_checkpoint=args.resume_from_checkpoint,
     )
 
     sys.exit(train_resnext(config))
