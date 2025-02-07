@@ -136,6 +136,9 @@ Inference transforms
 ## Incorporated ideas from the following resources
 * Torchvision classification reference https://github.com/pytorch/vision/blob/main/references/classification/train.py
 * Huggingface Accelerator https://huggingface.co/docs/accelerate/index
-* Huggingface Accelerator examples https://github.com/huggingface/accelerate/blob/main/examples/complete_cv_example.py
+  * examples https://github.com/huggingface/accelerate/blob/main/examples/complete_cv_example.py
+  * Accelerator class https://github.com/huggingface/accelerate/blob/main/src/accelerate/accelerator.py
 * Evaluate https://huggingface.co/docs/evaluate/index
+  * EvaluationModule / Metric class https://github.com/huggingface/evaluate/blob/v0.4.3/src/evaluate/module.py
+  * Metric definitions https://github.com/huggingface/evaluate/tree/v0.4.3/metrics
 

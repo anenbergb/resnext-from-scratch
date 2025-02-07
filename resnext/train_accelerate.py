@@ -25,46 +25,46 @@ from resnext.torchvision_utils import set_weight_decay
 @dataclass
 class TrainingConfig:
     output_dir: str
-    overwrite_output_dir = True  # overwrite the old model
+    overwrite_output_dir: bool = True  # overwrite the old model
     resume_from_checkpoint: str = None
 
-    train_batch_size = 128
-    val_batch_size = 256
+    train_batch_size: int = 128
+    val_batch_size: int = 256
 
-    epochs = 600
-    limit_train_iters = 0
-    limit_val_iters = 0
+    epochs: int = 600
+    limit_train_iters: int = 0
+    limit_val_iters: int = 0
 
     # Optimizer configuration
-    momentum = 0.9
+    momentum: float = 0.9
     # Linear warmup + CosineAnnealingLR
-    lr = 0.5  # seems pretty high
-    lr_warmup_steps = 500
-    lr_warmup_decay = 0.01
-    lr_min = 0.0
+    lr: float = 0.5  # seems pretty high
+    lr_warmup_epochs: int = 5
+    lr_warmup_decay: float = 0.01
+    lr_min: float = 0.0
 
     # Regularization and Augmentation
-    weight_decay = 2e-05
-    norm_weight_decay = 0.0
+    weight_decay: float = 2e-05
+    norm_weight_decay: float = 0.0
 
-    label_smoothing = 0.1
-    mixup_alpha = 0.2
-    cutmix_alpha = 1.0
-    ra_sampler = True
-    ra_reps = 4
+    label_smoothing: float = 0.1
+    mixup_alpha: float = 0.2
+    cutmix_alpha: float = 1.0
+    ra_sampler: bool = True
+    ra_reps: int = 4
 
     # EMA configuration
-    model_ema = True
-    model_ema_steps = 32
-    model_ema_decay = 0.99998
+    model_ema: bool = True
+    model_ema_steps: int = 32
+    model_ema_decay: float = 0.99998
 
-    mixed_precision = "bf16"  # no for float32
+    mixed_precision: str = "bf16"  # no for float32
 
-    save_image_epochs = 1
-    save_model_epochs = 1
-    seed = 0
+    save_image_epochs: int = 1
+    save_model_epochs: int = 1
+    seed: int = 0
 
-    num_workers = 2
+    num_workers: int = 2
 
 
 def train_resnext(config: TrainingConfig):
@@ -138,12 +138,11 @@ def train_resnext(config: TrainingConfig):
     model, optimizer, train_dataloader, val_dataloader, scheduler = accelerator.prepare(
         model, optimizer, train_dataloader, val_dataloader, scheduler
     )
-    if config.resume_from_checkpoint is not None or config.resume_from_checkpoint != "":
+    if config.resume_from_checkpoint is not None and os.path.exists(
+        config.resume_from_checkpoint
+    ):
         accelerator.load_state(config.resume_from_checkpoint)
     # TODO: automatically load the most recent checkpoint from the output_dir
-
-    # save the starting state
-    accelerator.save_state()  # saves to output_dir/checkpointing/checkpoint_0
 
     # How do I load from a checkpoint?
     # accelerator.load_state()
@@ -151,18 +150,19 @@ def train_resnext(config: TrainingConfig):
     global_step = 0
     for epoch in range(config.epochs):
         total_loss = 0
-
-        num_steps = (
-            len(train_dataloader)
-            if config.limit_train_iters == 0
-            else config.limit_train_iter
-        )
-        progress_bar = tqdm(
-            total=num_steps, disable=not accelerator.is_local_main_process
-        )
-        progress_bar.set_description(f"Epoch {epoch}")
         model.train()
-        for step, batch in enumerate(train_dataloader):
+        for step, batch in (
+            progress_bar := tqdm(
+                enumerate(train_dataloader),
+                total=(
+                    len(train_dataloader)
+                    if config.limit_train_iters == 0
+                    else config.limit_train_iters
+                ),
+                disable=not accelerator.is_local_main_process,
+                desc=f"Epoch {epoch}",
+            )
+        ):
             if config.limit_train_iters > 0 and step >= config.limit_train_iters:
                 break
 
@@ -173,12 +173,11 @@ def train_resnext(config: TrainingConfig):
             with accelerator.autocast():
                 loss = criterion(logits, labels)
             total_loss += loss.detach().item()
-            accelerator.backward()
+            accelerator.backward(loss)
 
             accelerator.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
 
-            progress_bar.update(1)
             current_lr = scheduler.get_last_lr()[0]
             # step might not be neccessary to log
             logs = {"loss": loss.detach().item(), "lr": current_lr, "step": global_step}
@@ -224,6 +223,7 @@ def run_validation(accelerator, model, criterion, val_data_loader, limit_val_ite
         for step, batch in tqdm(
             enumerate(val_data_loader),
             total=len(val_data_loader) if limit_val_iters == 0 else limit_val_iters,
+            disable=not accelerator.is_local_main_process,
             desc="Validation",
         ):
             if limit_val_iters > 0 and step >= limit_val_iters:
@@ -291,7 +291,7 @@ Run training loop for ResNeXt model on ImageNet dataset.
     )
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--output_dir",
+        "--output-dir",
         type=str,
         default="/media/bryan/ssd01/expr/resnext_from_scratch/run01",
         help="Path to save the model",
@@ -332,7 +332,7 @@ if __name__ == "__main__":
         train_batch_size=args.train_batch_size,
         val_batch_size=args.val_batch_size,
         epochs=args.epochs,
-        lr_warmup_steps=args.lr_warmup_epochs,
+        lr_warmup_epochs=args.lr_warmup_epochs,
         limit_train_iters=args.limit_train_iters,
         limit_val_iters=args.limit_val_iters,
         resume_from_checkpoint=args.resume_from_checkpoint,
