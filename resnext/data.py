@@ -21,9 +21,10 @@ class ImageNetDataset(torch.utils.data.Dataset):
         sample = self.hf_dataset[idx]
         sample["class_name"] = self.label_names[sample["label"]]
         sample["label"] = torch.tensor(sample["label"], dtype=torch.long)
-        sample["pil_image"] = sample["image"]
+        image = sample["image"].convert("RGB")
+        sample["pil_image"] = image
         if self.transform:
-            sample["image"] = self.transform(sample["image"])
+            sample["image"] = self.transform(image)
         return sample
 
 

@@ -120,7 +120,6 @@ def train_resnext(
             images = batch["image"].to(device)
             labels = batch["label"].to(device)
             logits = model(images)
-
             loss = criterion(logits, labels)
             loss.backward()
             optimizer.step()
