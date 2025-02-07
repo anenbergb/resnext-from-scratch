@@ -71,7 +71,7 @@ class Bottleneck(nn.Module):
                 "bn3": nn.BatchNorm2d(out_channels),
             }
         )
-        self.downsample = nn.Squential()
+        self.downsample = nn.Sequential()
         if stride != 1 or in_channels != out_channels:
             self.downsample = nn.Sequential(
                 nn.Conv2d(

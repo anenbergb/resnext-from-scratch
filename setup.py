@@ -26,6 +26,8 @@ setup(
         "fiftyone",
         "huggingface_hub[cli,torch]",
         "datasets",
+        "accelerate",
+        "scikit-learn",
     ],
     extras_require={
         "torch": [

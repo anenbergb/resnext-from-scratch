@@ -1,1 +1,1 @@
-from .resnext import ResNeXt
+from .model import ResNeXt
