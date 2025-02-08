@@ -22,6 +22,7 @@ from resnext.data import (
 )
 from resnext.torchvision_utils import set_weight_decay
 from resnext.utils import CombinedEvaluations, create_image_grid
+from resnext.accuracy_top_k import AccuracyTopK
 
 
 @dataclass
@@ -230,6 +231,7 @@ def run_validation(
 
     if accelerator.is_main_process:
         metrics = CombinedEvaluations(["accuracy", "f1", "precision", "recall"])
+        topk_accuracy = AccuracyTopK()  # to calculate top-5 accuracy
         total_loss = torch.tensor(0.0, device=accelerator.device)
         total_num_images = torch.tensor(0, dtype=torch.long, device=accelerator.device)
 
@@ -251,7 +253,6 @@ def run_validation(
             images = batch["image"]
             labels = batch["label"]
             logits = model(images)
-            preds = torch.argmax(logits, dim=1)
             with accelerator.autocast():
                 loss = criterion(logits, labels)  # average loss
 
@@ -260,12 +261,14 @@ def run_validation(
                 images.size(0), dtype=torch.long, device=accelerator.device
             )
             num_images = accelerator.gather(num_images)
-            preds, labels = accelerator.gather_for_metrics((preds, labels))
+            logits, labels = accelerator.gather_for_metrics((logits, labels))
 
             if accelerator.is_main_process:
                 total_loss += loss.sum()
                 total_num_images += num_images.sum()
+                preds = torch.argmax(logits, dim=1)
                 metrics.add_batch(predictions=preds, references=labels)
+                topk_accuracy.add_batch(predictions=logits, references=labels)
 
             # Image logging
             # images = accelerator.gather(images)
@@ -298,6 +301,11 @@ def run_validation(
             precision={"average": "macro", "zero_division": 0},
             recall={"average": "macro", "zero_division": 0},
         )
+        val_metrics["top_1_accuracy"] = val_metrics.pop("accuracy")
+        val_top5_acc = topk_accuracy.compute(
+            k=5, labels=np.arange(val_data_loader.dataset.num_classes)
+        )
+        val_metrics.update(val_top5_acc)
 
         avg_loss = (total_loss / total_num_images).item()
         val_metrics["loss"] = avg_loss
