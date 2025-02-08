@@ -21,7 +21,7 @@ from resnext.data import (
     Collate,
 )
 from resnext.torchvision_utils import set_weight_decay
-from resnext.utils import CombinedEvaluations
+from resnext.utils import CombinedEvaluations, create_image_grid
 
 
 @dataclass
@@ -233,6 +233,11 @@ def run_validation(
         total_loss = torch.tensor(0.0, device=accelerator.device)
         total_num_images = torch.tensor(0, dtype=torch.long, device=accelerator.device)
 
+    # tp_images = torch.empty([0, 3, 224, 224], device=accelerator.device)
+    # fp_images = torch.empty([0, 3, 224, 224], device=accelerator.device)
+    # tp_labels = torch.empty([0], device=accelerator.device)
+    # fp_labels = torch.empty([0], device=accelerator.device)
+
     model.eval()
     with torch.inference_mode():
         for step, batch in tqdm(
@@ -262,13 +267,29 @@ def run_validation(
                 total_num_images += num_images.sum()
                 metrics.add_batch(predictions=preds, references=labels)
 
+            # Image logging
+            # images = accelerator.gather(images)
+            # tp_images = images[labels == preds]
+            # fp_images = images[labels != preds]
+
+            # tp_labels = labels[labels == preds]
+            # fp_labels = labels[labels != preds]
+
             # log the predictions for the first batch
             # Accelerate tensorboard tracker
             # https://github.com/huggingface/accelerate/blob/main/src/accelerate/tracking.py#L165
-            # if accelerator.is_main_process and step == 0:
-            #     tensorboard = accelerator.get_tracker("tensorboard")
-
-            #     tensorboard.log_images(step = global_step)
+            if accelerator.is_main_process and step == 0:
+                pred_class_names = [
+                    val_data_loader.dataset.label_names[p] for p in preds
+                ]
+                gt_class_names = batch["class_name"]
+                image_array = create_image_grid(
+                    images.cpu(), pred_class_names, gt_class_names, max_images=50
+                )
+                tensorboard = accelerator.get_tracker("tensorboard")
+                tensorboard.log_images(
+                    {"val/predictions": image_array}, step=global_step
+                )
 
     val_metrics = {}
     if accelerator.is_main_process:

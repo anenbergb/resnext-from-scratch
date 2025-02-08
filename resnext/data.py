@@ -4,11 +4,46 @@ from datasets import load_dataset
 from torchvision.transforms import v2
 from torchvision.transforms.functional import InterpolationMode
 
+CORRUPTED_IMAGENET_IMAGES = {
+    "train": (
+        93403,
+        128675,
+        132982,
+        299807,
+        332307,
+        390540,
+        447450,
+        492410,
+        537742,
+        555333,
+        737902,
+        868710,
+        932734,
+        989727,
+        1021316,
+        1027236,
+        1050644,
+        1176937,
+        1200174,
+    ),
+    "validation": (),
+    "test": (84554, 96055),
+}
+
 
 class ImageNetDataset(torch.utils.data.Dataset):
     def __init__(self, split: str = "train", transform: Optional[Callable] = None):
+        assert split in ("train", "validation", "test")
+
         self.hf_dataset = load_dataset(
             "ILSVRC/imagenet-1k", split=split, trust_remote_code=True
+        )
+        self.hf_dataset = self.hf_dataset.select(
+            [
+                i
+                for i in range(len(self.hf_dataset))
+                if i not in CORRUPTED_IMAGENET_IMAGES[split]
+            ]
         )
         self.label_names = self.hf_dataset.features["label"].names
         self.num_classes = len(self.label_names)
