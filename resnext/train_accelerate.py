@@ -179,8 +179,7 @@ def train_resnext(config: TrainingConfig):
             optimizer.step()
 
             current_lr = scheduler.get_last_lr()[0]
-            # step might not be neccessary to log
-            logs = {"loss": loss.detach().item(), "lr": current_lr, "step": global_step}
+            logs = {"loss": loss.detach().item(), "lr": current_lr}
             progress_bar.set_postfix(**logs)
             accelerator.log(logs, step=global_step)
             global_step += 1
@@ -202,22 +201,25 @@ def train_resnext(config: TrainingConfig):
             val_dataloader,
             limit_val_iters=config.limit_val_iters,
         )
-        val_print_str = f"Validation metrics [Epoch {epoch}]: "
-        for k, v in val_metrics.items():
-            val_print_str += f"{k}: {v:.3f} "
-        accelerator.print(val_print_str)
-        log = {f"val/{k}": v for k, v in val_metrics.items()}
-        log["epoch"] = epoch
-        accelerator.log(**log, step=global_step)
+        if accelerator.is_main_process:
+            val_print_str = f"Validation metrics [Epoch {epoch}]: "
+            for k, v in val_metrics.items():
+                val_print_str += f"{k}: {v:.3f} "
+            accelerator.print(val_print_str)
+            log = {f"val/{k}": v for k, v in val_metrics.items()}
+            log["epoch"] = epoch
+            accelerator.log(log, step=global_step)
 
     accelerator.end_training()
 
 
 def run_validation(accelerator, model, criterion, val_data_loader, limit_val_iters=0):
-    metrics = CombinedEvaluations(["accuracy", "f1", "precision", "recall"])
 
-    total_loss = 0
-    image_counter = 0
+    if accelerator.is_main_process:
+        metrics = CombinedEvaluations(["accuracy", "f1", "precision", "recall"])
+        total_loss = torch.tensor(0.0, device=accelerator.device)
+        total_num_images = torch.tensor(0, dtype=torch.long, device=accelerator.device)
+
     model.eval()
     with torch.inference_mode():
         for step, batch in tqdm(
@@ -231,26 +233,32 @@ def run_validation(accelerator, model, criterion, val_data_loader, limit_val_ite
             images = batch["image"]
             labels = batch["label"]
             logits = model(images)
-            preds = torch.argmax(logits, dim=1).cpu().numpy()
+            preds = torch.argmax(logits, dim=1)
             with accelerator.autocast():
                 loss = criterion(logits, labels)  # average loss
-            total_loss += loss.cpu().item() * images.size(0)
-            image_counter += images.size(0)
 
+            loss = accelerator.gather(loss * images.size(0))
+            num_images = torch.tensor(
+                images.size(0), dtype=torch.long, device=accelerator.device
+            )
+            num_images = accelerator.gather(num_images)
             preds, labels = accelerator.gather_for_metrics((preds, labels))
-            metrics.add_batch(predictions=preds, references=labels)
 
-    val_metrics = metrics.compute(
-        f1={"average": "macro"},
-        precision={"average": "macro", "zero_division": 0},
-        recall={"average": "macro", "zero_division": 0},
-    )
+            if accelerator.is_main_process:
+                total_loss += loss.sum()
+                total_num_images += num_images.sum()
+                metrics.add_batch(predictions=preds, references=labels)
 
-    avg_loss = total_loss / image_counter
+    val_metrics = {}
+    if accelerator.is_main_process:
+        val_metrics = metrics.compute(
+            f1={"average": "macro"},
+            precision={"average": "macro", "zero_division": 0},
+            recall={"average": "macro", "zero_division": 0},
+        )
 
-    print(f"run_validation process {accelerator.process_index}, val/loss: {avg_loss}")
-    val_metrics["loss"] = avg_loss
-
+        avg_loss = (total_loss / total_num_images).item()
+        val_metrics["loss"] = avg_loss
     return val_metrics
 
 
