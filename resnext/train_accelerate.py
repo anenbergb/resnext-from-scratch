@@ -9,6 +9,7 @@ from dataclasses import dataclass
 
 # Huggingface
 from accelerate import Accelerator
+from accelerate.utils import ProjectConfiguration
 import evaluate
 
 from resnext import ResNeXt
@@ -20,6 +21,7 @@ from resnext.data import (
     Collate,
 )
 from resnext.torchvision_utils import set_weight_decay
+from resnext.utils import CombinedEvaluations
 
 
 @dataclass
@@ -60,8 +62,9 @@ class TrainingConfig:
 
     mixed_precision: str = "bf16"  # no for float32
 
+    checkpoint_total_limit: int = 3
+    checkpoint_epochs: int = 1
     save_image_epochs: int = 1
-    save_model_epochs: int = 1
     seed: int = 0
 
     num_workers: int = 2
@@ -72,14 +75,21 @@ def train_resnext(config: TrainingConfig):
     Default values from https://pytorch.org/blog/how-to-train-state-of-the-art-models-using-torchvision-latest-primitives/
     """
 
+    project_config = ProjectConfiguration(
+        project_dir=config.output_dir,
+        # logging_dir
+        automatic_checkpoint_naming=True,
+        total_limit=config.checkpoint_total_limit,
+        save_on_each_node=False,
+    )
     accelerator = Accelerator(
         mixed_precision=config.mixed_precision,
         log_with="tensorboard",
-        project_dir=os.path.join(config.output_dir, "logs"),
+        project_config=project_config,
     )
     if accelerator.is_main_process:
         os.makedirs(config.output_dir, exist_ok=True)
-        accelerator.init_trackers("resnext_trainer")
+        accelerator.init_trackers(os.path.basename(config.output_dir))
 
     val_dataset = ImageNetDataset(split="validation", transform=get_val_transforms())
     train_dataset = ImageNetDataset(split="train", transform=get_train_transforms())
@@ -184,7 +194,7 @@ def train_resnext(config: TrainingConfig):
             accelerator.log(logs, step=global_step)
             global_step += 1
 
-        if epoch % config.save_model_epochs == 0:
+        if epoch % config.checkpoint_epochs == 0:
             # save_directory = os.path.join(config.output_dir, "checkpoints")
             accelerator.wait_for_everyone()
             if accelerator.is_main_process:
@@ -200,6 +210,7 @@ def train_resnext(config: TrainingConfig):
             criterion,
             val_dataloader,
             limit_val_iters=config.limit_val_iters,
+            global_step=global_step,
         )
         if accelerator.is_main_process:
             val_print_str = f"Validation metrics [Epoch {epoch}]: "
@@ -213,7 +224,9 @@ def train_resnext(config: TrainingConfig):
     accelerator.end_training()
 
 
-def run_validation(accelerator, model, criterion, val_data_loader, limit_val_iters=0):
+def run_validation(
+    accelerator, model, criterion, val_data_loader, limit_val_iters=0, global_step=0
+):
 
     if accelerator.is_main_process:
         metrics = CombinedEvaluations(["accuracy", "f1", "precision", "recall"])
@@ -249,6 +262,14 @@ def run_validation(accelerator, model, criterion, val_data_loader, limit_val_ite
                 total_num_images += num_images.sum()
                 metrics.add_batch(predictions=preds, references=labels)
 
+            # log the predictions for the first batch
+            # Accelerate tensorboard tracker
+            # https://github.com/huggingface/accelerate/blob/main/src/accelerate/tracking.py#L165
+            # if accelerator.is_main_process and step == 0:
+            #     tensorboard = accelerator.get_tracker("tensorboard")
+
+            #     tensorboard.log_images(step = global_step)
+
     val_metrics = {}
     if accelerator.is_main_process:
         val_metrics = metrics.compute(
@@ -260,34 +281,6 @@ def run_validation(accelerator, model, criterion, val_data_loader, limit_val_ite
         avg_loss = (total_loss / total_num_images).item()
         val_metrics["loss"] = avg_loss
     return val_metrics
-
-
-class CombinedEvaluations(evaluate.CombinedEvaluations):
-    """
-    Extended this class https://github.com/huggingface/evaluate/blob/v0.4.3/src/evaluate/module.py#L872
-    """
-
-    def compute(self, predictions=None, references=None, **kwargs):
-        results = []
-        kwargs_per_evaluation_module = {
-            name: {} for name in self.evaluation_module_names
-        }
-        for key, value in kwargs.items():
-            if key not in kwargs_per_evaluation_module:
-                for k in kwargs_per_evaluation_module:
-                    kwargs_per_evaluation_module[k].update({key: value})
-            elif key in kwargs_per_evaluation_module and isinstance(value, dict):
-                kwargs_per_evaluation_module[key].update(value)
-
-        for evaluation_module in self.evaluation_modules:
-            batch = {
-                "predictions": predictions,
-                "references": references,
-                **kwargs_per_evaluation_module[evaluation_module.name],
-            }
-            results.append(evaluation_module.compute(**batch))
-
-        return self._merge_results(results)
 
 
 def get_args() -> argparse.Namespace:
