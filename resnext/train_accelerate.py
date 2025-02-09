@@ -87,6 +87,8 @@ def train_resnext(config: TrainingConfig):
         mixed_precision=config.mixed_precision,
         log_with="tensorboard",
         project_config=project_config,
+        step_scheduler_with_optimizer=False,
+        split_batches=False,
     )
     if accelerator.is_main_process:
         os.makedirs(config.output_dir, exist_ok=True)
@@ -190,21 +192,19 @@ def train_resnext(config: TrainingConfig):
             optimizer.step()
 
             current_lr = scheduler.get_last_lr()[0]
-            logs = {"loss": loss.detach().item(), "lr": current_lr}
+            logs = {
+                "loss/train": loss.detach().item(),
+                "lr": current_lr,
+                "epoch": epoch,
+            }
             progress_bar.set_postfix(**logs)
             accelerator.log(logs, step=global_step)
             global_step += 1
 
         if epoch % config.checkpoint_epochs == 0:
-            # save_directory = os.path.join(config.output_dir, "checkpoints")
-            accelerator.wait_for_everyone()
-            if accelerator.is_main_process:
-                output_dir = os.path.join(config.output_dir, f"epoch_{epoch}")
-                # accelerator.save_model(model, save_directory)
-                accelerator.save_state(output_dir)
+            accelerator.save_state()
 
         scheduler.step()  # once per epoch
-
         val_metrics = run_validation(
             accelerator,
             model,
@@ -218,16 +218,17 @@ def train_resnext(config: TrainingConfig):
             for k, v in val_metrics.items():
                 val_print_str += f"{k}: {v:.3f} "
             accelerator.print(val_print_str)
-            log = {f"val/{k}": v for k, v in val_metrics.items()}
-            log["epoch"] = epoch
+            log = {f"val/{k}": v for k, v in val_metrics.items() if k != "loss"}
+            log["loss/val"] = val_metrics["loss"]
             accelerator.log(log, step=global_step)
 
     accelerator.end_training()
 
 
 def run_validation(
-    accelerator, model, criterion, val_data_loader, limit_val_iters=0, global_step=0
+    accelerator, model, criterion, val_dataloader, limit_val_iters=0, global_step=0
 ):
+    # debug multiprocessing by printing accelerator.local_process_index
 
     if accelerator.is_main_process:
         metrics = CombinedEvaluations(["accuracy", "f1", "precision", "recall"])
@@ -243,8 +244,8 @@ def run_validation(
     model.eval()
     with torch.inference_mode():
         for step, batch in tqdm(
-            enumerate(val_data_loader),
-            total=len(val_data_loader) if limit_val_iters == 0 else limit_val_iters,
+            enumerate(val_dataloader),
+            total=len(val_dataloader) if limit_val_iters == 0 else limit_val_iters,
             disable=not accelerator.is_local_main_process,
             desc="Validation",
         ):
@@ -255,13 +256,14 @@ def run_validation(
             logits = model(images)
             with accelerator.autocast():
                 loss = criterion(logits, labels)  # average loss
+                loss *= images.size(0)  # total loss
 
-            loss = accelerator.gather(loss * images.size(0))
             num_images = torch.tensor(
                 images.size(0), dtype=torch.long, device=accelerator.device
             )
-            num_images = accelerator.gather(num_images)
-            logits, labels = accelerator.gather_for_metrics((logits, labels))
+            logits, labels, loss, num_images = accelerator.gather_for_metrics(
+                (logits, labels, loss, num_images)
+            )
 
             if accelerator.is_main_process:
                 total_loss += loss.sum()
@@ -283,7 +285,7 @@ def run_validation(
             # https://github.com/huggingface/accelerate/blob/main/src/accelerate/tracking.py#L165
             if accelerator.is_main_process and step == 0:
                 pred_class_names = [
-                    val_data_loader.dataset.label_names[p] for p in preds
+                    val_dataloader.dataset.label_names[p] for p in preds
                 ]
                 gt_class_names = batch["class_name"]
                 image_array = create_image_grid(
@@ -291,7 +293,9 @@ def run_validation(
                 )
                 tensorboard = accelerator.get_tracker("tensorboard")
                 tensorboard.log_images(
-                    {"val/predictions": image_array}, step=global_step
+                    {"val/predictions": image_array},
+                    step=global_step,
+                    dataformats="HWC",
                 )
 
     val_metrics = {}
@@ -303,7 +307,7 @@ def run_validation(
         )
         val_metrics["top_1_accuracy"] = val_metrics.pop("accuracy")
         val_top5_acc = topk_accuracy.compute(
-            k=5, labels=np.arange(val_data_loader.dataset.num_classes)
+            k=5, labels=np.arange(val_dataloader.dataset.num_classes)
         )
         val_metrics.update(val_top5_acc)
 

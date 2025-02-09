@@ -1,11 +1,16 @@
 import torch
 import evaluate
 import numpy as np
-import matplotlib.pyplot as plt
+
 from torchvision.utils import make_grid
 
 from torchvision.transforms.v2.functional import normalize
 from genaibook.core import show_images
+
+import matplotlib.pyplot as plt
+
+# Use the 'agg' backend for Matplotlib
+plt.switch_backend("agg")
 
 
 def unnormalize(
