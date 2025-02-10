@@ -2,15 +2,13 @@ import argparse
 import os
 import sys
 import numpy as np
-from sklearn.metrics import accuracy_score
 import torch
-from tqdm import tqdm, trange
+from tqdm import tqdm
 from dataclasses import dataclass
 
 # Huggingface
 from accelerate import Accelerator
 from accelerate.utils import ProjectConfiguration
-import evaluate
 
 from resnext import ResNeXt
 from resnext.data import (
@@ -155,10 +153,6 @@ def train_resnext(config: TrainingConfig):
         config.resume_from_checkpoint
     ):
         accelerator.load_state(config.resume_from_checkpoint)
-    # TODO: automatically load the most recent checkpoint from the output_dir
-
-    # How do I load from a checkpoint?
-    # accelerator.load_state()
 
     global_step = 0
     for epoch in range(config.epochs):
@@ -236,11 +230,6 @@ def run_validation(
         total_loss = torch.tensor(0.0, device=accelerator.device)
         total_num_images = torch.tensor(0, dtype=torch.long, device=accelerator.device)
 
-    # tp_images = torch.empty([0, 3, 224, 224], device=accelerator.device)
-    # fp_images = torch.empty([0, 3, 224, 224], device=accelerator.device)
-    # tp_labels = torch.empty([0], device=accelerator.device)
-    # fp_labels = torch.empty([0], device=accelerator.device)
-
     model.eval()
     with torch.inference_mode():
         for step, batch in tqdm(
@@ -271,14 +260,6 @@ def run_validation(
                 preds = torch.argmax(logits, dim=1)
                 metrics.add_batch(predictions=preds, references=labels)
                 topk_accuracy.add_batch(predictions=logits, references=labels)
-
-            # Image logging
-            # images = accelerator.gather(images)
-            # tp_images = images[labels == preds]
-            # fp_images = images[labels != preds]
-
-            # tp_labels = labels[labels == preds]
-            # fp_labels = labels[labels != preds]
 
             # log the predictions for the first batch
             # Accelerate tensorboard tracker
