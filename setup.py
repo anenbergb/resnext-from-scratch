@@ -19,7 +19,11 @@ setup(
         "types-Pillow",
         "datasets",
         "accelerate",
+        "evaluate",
         "scikit-learn",
+        "jax[cuda12]",
+        "flax",
+        "optax",
     ],
     extras_require={
         "torch": [

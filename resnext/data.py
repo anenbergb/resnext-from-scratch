@@ -32,11 +32,16 @@ CORRUPTED_IMAGENET_IMAGES = {
 
 
 class ImageNetDataset(torch.utils.data.Dataset):
-    def __init__(self, split: str = "train", transform: Optional[Callable] = None):
+    def __init__(self, split: str = "train", transform: Optional[Callable] = None,
+                 revision: str = "4603483700ee984ea9debe3ddbfdeae86f6489eb"):
+        """
+        ILSVRC/imagenet-1k dataset from Hugging Face was updated from .arrow to .parquet format
+        in 09/2025. To use the older .arrow format, specify the revision argument.
+        """
         assert split in ("train", "validation", "test")
 
         self.hf_dataset = load_dataset(
-            "ILSVRC/imagenet-1k", split=split, trust_remote_code=True
+            "ILSVRC/imagenet-1k", split=split, trust_remote_code=True, revision=revision
         )
         self.hf_dataset = self.hf_dataset.select(
             [
