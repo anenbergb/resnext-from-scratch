@@ -35,15 +35,24 @@ class Bottleneck(nnx.Module):
 
         self.main_branch = nnx.Dict(
             {
+                # weight tensor (kernel) for 2D conv should have shape
+                # (kernel_h, kernel_w, in_channels, out_channels)
+                # kaiming_normal(in_axis=-2, out_axis=-1) should be correct here
                 "conv1": nnx.Conv(
                     in_channels,
                     hidden_dim,
                     kernel_size=(1, 1),
                     use_bias=False,
                     rngs=rngs,
+                    kernel_init=nnx.initializers.kaiming_normal(),
                 ),
                 # assumes input tensor is (N,H,W,C). BN should normalize over all axes except the last.
-                "bn1": nnx.BatchNorm(hidden_dim, rngs=rngs),
+                "bn1": nnx.BatchNorm(
+                    hidden_dim,
+                    rngs=rngs,
+                    scale_init=nnx.initializers.ones,
+                    bias_init=nnx.initializers.zeros,
+                ),
                 "relu1": nnx.relu,  # not in place
                 "conv2": nnx.Conv(
                     hidden_dim,
@@ -54,8 +63,14 @@ class Bottleneck(nnx.Module):
                     feature_group_count=cardinality,
                     # padding = "SAME" is equivalent to padding = 1
                     rngs=rngs,
+                    kernel_init=nnx.initializers.kaiming_normal(),
                 ),
-                "bn2": nnx.BatchNorm(hidden_dim, rngs=rngs),
+                "bn2": nnx.BatchNorm(
+                    hidden_dim,
+                    rngs=rngs,
+                    scale_init=nnx.initializers.ones,
+                    bias_init=nnx.initializers.zeros,
+                ),
                 "relu2": nnx.relu,
                 "conv3": nnx.Conv(
                     hidden_dim,
@@ -63,8 +78,14 @@ class Bottleneck(nnx.Module):
                     kernel_size=(1, 1),
                     use_bias=False,
                     rngs=rngs,
+                    kernel_init=nnx.initializers.kaiming_normal(),
                 ),
-                "bn3": nnx.BatchNorm(out_channels, rngs=rngs),
+                "bn3": nnx.BatchNorm(
+                    out_channels,
+                    rngs=rngs,
+                    scale_init=nnx.initializers.ones,
+                    bias_init=nnx.initializers.zeros,
+                ),
             }
         )
         self.downsample = nnx.Sequential()
@@ -77,8 +98,14 @@ class Bottleneck(nnx.Module):
                     strides=(stride, stride),
                     use_bias=False,
                     rngs=rngs,
+                    kernel_init=nnx.initializers.kaiming_normal(),
                 ),
-                nnx.BatchNorm(out_channels, rngs=rngs),
+                nnx.BatchNorm(
+                    out_channels,
+                    rngs=rngs,
+                    scale_init=nnx.initializers.ones,
+                    bias_init=nnx.initializers.zeros,
+                ),
             )
 
         self.in_channels = in_channels
@@ -127,8 +154,14 @@ class ResNeXt(nnx.Module):
                 use_bias=False,
                 # padding = "SAME" is equivalent to padding = 3
                 rngs=rngs,
+                kernel_init=nnx.initializers.kaiming_normal(),
             ),
-            nnx.BatchNorm(stem_channels, rngs=rngs),
+            nnx.BatchNorm(
+                stem_channels,
+                rngs=rngs,
+                scale_init=nnx.initializers.ones,
+                bias_init=nnx.initializers.zeros,
+            ),
             nnx.relu,
             partial(nnx.max_pool, window_shape=(3, 3), strides=(2, 2), padding="SAME"),
             # padding = "SAME" is equivalent to padding = 1
@@ -142,7 +175,17 @@ class ResNeXt(nnx.Module):
             )
             self.stages.update({f"stage{stage_index}": stage})
 
-        self.fc = nnx.Linear(in_channels, num_classes, use_bias=True, rngs=rngs)
+        # weight tensor (kernel) for 1D Linear should have shape
+        # (in_channels, out_channels)
+        # kaiming_uniform(in_axis=-2, out_axis=-1) should be correct here
+        self.fc = nnx.Linear(
+            in_channels,
+            num_classes,
+            use_bias=True,
+            rngs=rngs,
+            kernel_init=nnx.initializers.kaiming_uniform(),
+            bias_init=nnx.initializers.zeros,
+        )
 
     def make_stage(
         self,
@@ -173,6 +216,6 @@ class ResNeXt(nnx.Module):
             out = stage(out)
         # (N,H,W,C)
         # adaptive average pool
-        out = jax.numpy.mean(out, axis=(1, 2), keepdims=False)  # (N,1,C)
+        out = jax.numpy.mean(out, axis=(1, 2), keepdims=False)  # (N,C)
         out = self.fc(out)
         return out
