@@ -86,9 +86,9 @@ def train_resnext(
         collate_fn=Collate(jax=True),
     )
 
-    model = ResNeXt(rngs=rngs_init)  # ResNeXt-50 (32x4d)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model.to(device)
+    model = ResNeXt(
+        num_classes=train_dataset.num_classes, rngs=rngs_init
+    )  # ResNeXt-50 (32x4d)
 
     lr_schedule = optax.schedules.warmup_cosine_decay_schedule(
         init_value=lr * lr_warmup_decay,
@@ -110,6 +110,7 @@ def train_resnext(
     )
     optimizer = nnx.Optimizer(model, optax_chain, wrt=nnx.Param)
 
+    global_step = 0
     for epoch in (progress := trange(epochs, desc="Training")):
         model.train()
         for step, batch in (
@@ -123,28 +124,28 @@ def train_resnext(
                 desc=f"Epoch {epoch}",
             )
         ):
-            if limit_train_iters > 0 and step >= limit_train_iters:
+            if limit_train_iters > 0 and global_step >= limit_train_iters:
                 break
 
             images = batch["image"]  # numpy NHWC
             labels = batch["label"]  # N
+            if label_smoothing > 0:
+                labels = smooth_one_hot_labels(labels, label_smoothing)
 
-            # TODO: update this to label smoothing
             def loss_fn(model):
                 logits = model(images)  # (N,C)
-                loss = optax.losses.softmax_cross_entropy_with_integer_labels(
-                    logits, labels
-                )
-                return loss
+                loss = optax.losses.softmax_cross_entropy(logits, labels)
+                avg_loss = jax.numpy.mean(loss)
+                return avg_loss
 
             # It's not necessary to 'zero' the gradients because jax is functional and stateless
             grad_fn = nnx.value_and_grad(loss_fn)
             loss, grads = grad_fn(model)
             optimizer.update(model, grads)
 
-            current_lr = 0.0
-            # current_lr = scheduler.get_last_lr()[0]
+            current_lr = lr_schedule(global_step)
             inner.set_postfix(lr=f"{current_lr:.0e}", loss=f"{float(loss):.3f}")
+            global_step += 1
 
         # accuracy, val_loss = evaluate(
         #     model,
@@ -156,7 +157,7 @@ def train_resnext(
 
         progress.set_postfix(
             lr=f"{current_lr:.0e}",
-            loss=f"{loss.cpu().item():.3f}",
+            loss=f"{float(loss):.3f}",
             # val_loss=f"{val_loss:.3f}",
             # accuracy=f"{accuracy:.3f}",
         )
@@ -191,6 +192,21 @@ def train_resnext(
 #     return accuracy, avg_loss
 
 
+def smooth_one_hot_labels(one_hot_labels, smoothing_alpha):
+    """Converts integer labels to smoothed one-hot targets (soft labels)."""
+
+    # Calculate the "uniform" component
+    uniform_prob = smoothing_alpha / one_hot_labels.shape[-1]
+
+    # Calculate the "confidence" component (1 - alpha)
+    confidence = 1.0 - smoothing_alpha
+
+    # Apply the smoothing formula
+    smoothed_labels = one_hot_labels * confidence + uniform_prob
+
+    return smoothed_labels
+
+
 def get_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         """
@@ -200,7 +216,7 @@ Run training loop for ResNeXt model on ImageNet dataset.
     )
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--output_dir",
+        "--output-dir",
         type=str,
         default="/media/bryan/ssd01/expr/resnext_from_scratch/run01",
         help="Path to save the model",

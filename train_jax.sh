@@ -4,6 +4,7 @@ eval "$(conda shell.bash hook)"
 export CUDA_VISIBLE_DEVICES=0
 
 conda activate jax
+# JAX_DISABLE_JIT=1 
 JAX_PLATFORM_NAME=gpu python resnext/train_jax.py \
 --output-dir /media/bryan/ssd01/expr/resnext_from_scratch/debug02 \
 --batch-size 32 \

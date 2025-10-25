@@ -33,12 +33,11 @@ class Bottleneck(nnx.Module):
         hidden_dim = stage_index * d * cardinality
         out_channels = hidden_dim * mult_factor
 
-        self.main_branch = nnx.Dict(
-            {
+        self.main_branch = nnx.Sequential(
                 # weight tensor (kernel) for 2D conv should have shape
                 # (kernel_h, kernel_w, in_channels, out_channels)
                 # kaiming_normal(in_axis=-2, out_axis=-1) should be correct here
-                "conv1": nnx.Conv(
+                nnx.Conv(
                     in_channels,
                     hidden_dim,
                     kernel_size=(1, 1),
@@ -47,14 +46,14 @@ class Bottleneck(nnx.Module):
                     kernel_init=nnx.initializers.kaiming_normal(),
                 ),
                 # assumes input tensor is (N,H,W,C). BN should normalize over all axes except the last.
-                "bn1": nnx.BatchNorm(
+                nnx.BatchNorm(
                     hidden_dim,
                     rngs=rngs,
                     scale_init=nnx.initializers.ones,
                     bias_init=nnx.initializers.zeros,
                 ),
-                "relu1": nnx.relu,  # not in place
-                "conv2": nnx.Conv(
+                nnx.relu,  # not in place
+                nnx.Conv(
                     hidden_dim,
                     hidden_dim,
                     kernel_size=(3, 3),
@@ -65,14 +64,14 @@ class Bottleneck(nnx.Module):
                     rngs=rngs,
                     kernel_init=nnx.initializers.kaiming_normal(),
                 ),
-                "bn2": nnx.BatchNorm(
+                nnx.BatchNorm(
                     hidden_dim,
                     rngs=rngs,
                     scale_init=nnx.initializers.ones,
                     bias_init=nnx.initializers.zeros,
                 ),
-                "relu2": nnx.relu,
-                "conv3": nnx.Conv(
+                nnx.relu,
+                nnx.Conv(
                     hidden_dim,
                     out_channels,
                     kernel_size=(1, 1),
@@ -80,13 +79,12 @@ class Bottleneck(nnx.Module):
                     rngs=rngs,
                     kernel_init=nnx.initializers.kaiming_normal(),
                 ),
-                "bn3": nnx.BatchNorm(
+                nnx.BatchNorm(
                     out_channels,
                     rngs=rngs,
                     scale_init=nnx.initializers.ones,
                     bias_init=nnx.initializers.zeros,
                 ),
-            }
         )
         self.downsample = nnx.Sequential()
         if stride != 1 or in_channels != out_channels:
@@ -117,10 +115,7 @@ class Bottleneck(nnx.Module):
         self.stage_index = stage_index
 
     def __call__(self, x):
-        out = x
-        for layer in self.main_branch.values():
-            out = layer(out)
-        out += self.downsample(x)
+        out = self.main_branch(x) + self.downsample(x)
         out = nnx.relu(out)
         return out
 
@@ -168,12 +163,12 @@ class ResNeXt(nnx.Module):
         )
 
         in_channels = stem_channels
-        self.stages = nnx.Dict()
+        self.stages = nnx.List()
         for stage_index, layers_per_stage in enumerate(num_layers):
             stage, in_channels = self.make_stage(
                 in_channels, stage_index + 1, layers_per_stage, rngs=rngs
             )
-            self.stages.update({f"stage{stage_index}": stage})
+            self.stages.append(stage)
 
         # weight tensor (kernel) for 1D Linear should have shape
         # (in_channels, out_channels)
@@ -212,7 +207,7 @@ class ResNeXt(nnx.Module):
 
     def __call__(self, x):
         out = self.stem(x)
-        for stage in self.stages.values():
+        for stage in self.stages:
             out = stage(out)
         # (N,H,W,C)
         # adaptive average pool
