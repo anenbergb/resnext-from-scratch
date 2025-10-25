@@ -14,6 +14,7 @@ from resnext.data import (
     Collate,
 )
 import jax
+import jax.numpy as jnp
 from flax import nnx
 import optax
 
@@ -130,12 +131,12 @@ def train_resnext(
             images = batch["image"]  # numpy NHWC
             labels = batch["label"]  # N
             if label_smoothing > 0:
-                labels = smooth_one_hot_labels(labels, label_smoothing)
+                labels = optax.losses.smooth_labels(labels, label_smoothing)
 
             def loss_fn(model):
                 logits = model(images)  # (N,C)
                 loss = optax.losses.softmax_cross_entropy(logits, labels)
-                avg_loss = jax.numpy.mean(loss)
+                avg_loss = jnp.mean(loss)
                 return avg_loss
 
             # It's not necessary to 'zero' the gradients because jax is functional and stateless
@@ -147,64 +148,48 @@ def train_resnext(
             inner.set_postfix(lr=f"{current_lr:.0e}", loss=f"{float(loss):.3f}")
             global_step += 1
 
-        # accuracy, val_loss = evaluate(
-        #     model,
-        #     criterion,
-        #     val_dataloader,
-        #     device=device,
-        #     limit_val_iters=limit_val_iters,
-        # )
+        accuracy, val_loss = evaluate(
+            model,
+            val_dataloader,
+            limit_val_iters=limit_val_iters,
+        )
 
         progress.set_postfix(
             lr=f"{current_lr:.0e}",
             loss=f"{float(loss):.3f}",
-            # val_loss=f"{val_loss:.3f}",
-            # accuracy=f"{accuracy:.3f}",
+            val_loss=f"{val_loss:.3f}",
+            accuracy=f"{accuracy:.3f}",
         )
 
 
-# def evaluate(model, criterion, val_data_loader, device="cuda", limit_val_iters=0):
-#     all_preds = np.array([], dtype=int)
-#     all_labels = np.array([], dtype=int)
-#     total_loss = 0
-#     model.eval()
-#     with torch.inference_mode():
-#         for step, batch in (
-#             inner := tqdm(
-#                 enumerate(val_data_loader),
-#                 total=len(val_data_loader) if limit_val_iters == 0 else limit_val_iters,
-#                 desc="Validation",
-#             )
-#         ):
-#             if limit_val_iters > 0 and step >= limit_val_iters:
-#                 break
-#             images = batch["image"].to(device)
-#             labels = batch["label"].to(device)
-#             logits = model(images)
-#             preds = torch.argmax(logits, dim=1).cpu().numpy()
-#             all_preds = np.concatenate((all_preds, preds))
-#             all_labels = np.concatenate((all_labels, labels.cpu().numpy()))
-#             loss = criterion(logits, labels) * images.size(0)
-#             total_loss += loss.cpu().item()
+def evaluate(model, val_data_loader, limit_val_iters=0):
+    all_preds = jnp.array([], dtype=int)
+    all_labels = jnp.array([], dtype=int)
+    total_loss = 0
+    model.eval()
+    for step, batch in (
+        inner := tqdm(
+            enumerate(val_data_loader),
+            total=len(val_data_loader) if limit_val_iters == 0 else limit_val_iters,
+            desc="Validation",
+        )
+    ):
+        if limit_val_iters > 0 and step >= limit_val_iters:
+            break
+        images = batch["image"]
+        labels = batch["label"]
+        logits = model(images)
+        preds = jnp.argmax(logits, axis=1)
+        all_preds = jnp.concatenate((all_preds, preds))
+        all_labels = jnp.concatenate((all_labels, labels))
+        loss = optax.losses.softmax_cross_entropy_with_integer_labels(
+            logits, labels
+        ).sum()
+        total_loss += loss
 
-#     avg_loss = total_loss / len(all_labels)
-#     accuracy = accuracy_score(all_labels, all_preds)
-#     return accuracy, avg_loss
-
-
-def smooth_one_hot_labels(one_hot_labels, smoothing_alpha):
-    """Converts integer labels to smoothed one-hot targets (soft labels)."""
-
-    # Calculate the "uniform" component
-    uniform_prob = smoothing_alpha / one_hot_labels.shape[-1]
-
-    # Calculate the "confidence" component (1 - alpha)
-    confidence = 1.0 - smoothing_alpha
-
-    # Apply the smoothing formula
-    smoothed_labels = one_hot_labels * confidence + uniform_prob
-
-    return smoothed_labels
+    avg_loss = total_loss / len(all_labels)
+    accuracy = accuracy_score(all_labels, all_preds)
+    return accuracy, avg_loss
 
 
 def get_args() -> argparse.Namespace:
