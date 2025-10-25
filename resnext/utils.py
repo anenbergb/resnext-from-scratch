@@ -5,7 +5,7 @@ import numpy as np
 from torchvision.utils import make_grid
 
 from torchvision.transforms.v2.functional import normalize
-from genaibook.core import show_images
+# from genaibook.core import show_images
 
 import matplotlib.pyplot as plt
 
@@ -25,18 +25,18 @@ def unnormalize(
     return unnormalized
 
 
-def show_images_unnormalize(
-    ims,
-    mean=(0.485, 0.456, 0.406),
-    std=(0.229, 0.224, 0.225),
-    num_images=25,
-    max_cols=5,
-):
-    ims = unnormalize(ims, mean, std)
-    num_images = min(ims.shape[0], num_images)
-    ncols = min(max_cols, num_images)
-    nrows = int(np.ceil(num_images / max_cols))
-    return show_images(ims, nrows=nrows, ncols=ncols)
+# def show_images_unnormalize(
+#     ims,
+#     mean=(0.485, 0.456, 0.406),
+#     std=(0.229, 0.224, 0.225),
+#     num_images=25,
+#     max_cols=5,
+# ):
+#     ims = unnormalize(ims, mean, std)
+#     num_images = min(ims.shape[0], num_images)
+#     ncols = min(max_cols, num_images)
+#     nrows = int(np.ceil(num_images / max_cols))
+#     return show_images(ims, nrows=nrows, ncols=ncols)
 
 
 def create_image_grid(

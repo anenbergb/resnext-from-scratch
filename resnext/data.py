@@ -3,6 +3,7 @@ import torch
 from datasets import load_dataset
 from torchvision.transforms import v2
 from torchvision.transforms.functional import InterpolationMode
+import numpy as np
 
 CORRUPTED_IMAGENET_IMAGES = {
     "train": (
@@ -32,11 +33,16 @@ CORRUPTED_IMAGENET_IMAGES = {
 
 
 class ImageNetDataset(torch.utils.data.Dataset):
-    def __init__(self, split: str = "train", transform: Optional[Callable] = None):
+    def __init__(self, split: str = "train", transform: Optional[Callable] = None,
+                 revision: str = "4603483700ee984ea9debe3ddbfdeae86f6489eb"):
+        """
+        ILSVRC/imagenet-1k dataset from Hugging Face was updated from .arrow to .parquet format
+        in 09/2025. To use the older .arrow format, specify the revision argument.
+        """
         assert split in ("train", "validation", "test")
 
         self.hf_dataset = load_dataset(
-            "ILSVRC/imagenet-1k", split=split, trust_remote_code=True
+            "ILSVRC/imagenet-1k", split=split, trust_remote_code=True, revision=revision
         )
         self.hf_dataset = self.hf_dataset.select(
             [
@@ -118,6 +124,13 @@ def get_train_transforms(
 
 
 class Collate:
+    def __init__(self, jax=False):
+        """
+        For jax, the PyTorch tensors should be converted to numpy
+        Images should also be converted from PyTorch's NCHW format to NHWC format.
+        """
+        self.jax = jax
+    
     def __call__(self, batch):
         """
         batch should be a list of dictionaries with keys "pil_image", "label", "image", and "class_name"
@@ -128,6 +141,11 @@ class Collate:
 
         batch = torch.utils.data.default_collate(batch)
         batch["pil_image"] = images
+
+        if self.jax:
+            batch["label"] = batch["label"].numpy()
+            batch["image"] = np.transpose(batch["image"].numpy(), (0,2,3,1)) # NCHW -> NHWC
+
         return batch
 
 
@@ -140,7 +158,7 @@ class MixUpCutMixCollate:
     How to use CutMix and MixUp https://pytorch.org/vision/0.21/auto_examples/transforms/plot_cutmix_mixup.html
     """
 
-    def __init__(self, num_classes=1000, mixup_alpha=0.2, cutmix_alpha=1.0):
+    def __init__(self, num_classes=1000, mixup_alpha=0.2, cutmix_alpha=1.0, jax = False):
         self.mixup_alpha = mixup_alpha
         self.cutmix_alpha = cutmix_alpha
         assert (
@@ -164,6 +182,7 @@ class MixUpCutMixCollate:
                 )
             )
         self.transform = v2.RandomChoice(transforms)
+        self.jax = jax
 
     def __call__(self, batch):
         """
@@ -177,16 +196,21 @@ class MixUpCutMixCollate:
         batch = torch.utils.data.default_collate(batch)
         batch = self.transform(batch)
         batch["pil_image"] = images
+
+        if self.jax:
+            batch["label"] = batch["label"].numpy()
+            batch["image"] = np.transpose(batch["image"].numpy(), (0,2,3,1)) # NCHW -> NHWC
+
         return batch
 
 
-def get_collate_function(num_classes=1000, mixup_alpha=0.2, cutmix_alpha=1.0):
+def get_collate_function(num_classes=1000, mixup_alpha=0.2, cutmix_alpha=1.0, jax=False):
     if mixup_alpha > 0 or cutmix_alpha > 0:
         return MixUpCutMixCollate(
-            num_classes=num_classes, mixup_alpha=mixup_alpha, cutmix_alpha=cutmix_alpha
+            num_classes=num_classes, mixup_alpha=mixup_alpha, cutmix_alpha=cutmix_alpha, jax=jax
         )
     else:
-        return Collate()
+        return Collate(jax=jax)
 
 
 # Repeat augment
